@@ -1,0 +1,182 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x3f, 20, 4);  // I2C address may vary, adjust if needed
+
+// Pin Definitions
+const int ScalepF = 8; // Pin for pF scale selection
+const int ScalenF = 13; // Pin for nF scale selection
+const int OUT_PIN = A2; // Pin connected to the capacitor for low range measurement
+const int IN_PIN = A0; // Pin used for low range measurement
+const int analogPin = A0; // Pin for analog input
+const int chargePin = 5; // Pin for capacitor charging
+const int dischargePin = 6; // Pin for capacitor discharging
+
+// Resistance and Capacitance Constants
+const float resistorValue = 10000.0; // 10K resistor used for high range measurement
+const float IN_STRAY_CAP_TO_GND = 50.28; // Stray capacitance for low range measurement
+const float MAX_ADC_VALUE = 1023.0; // Maximum ADC value
+
+// Thresholds for auto-ranging
+const float highThreshold = 1000.0; // Threshold value to switch to high range (in nanofarads)
+const float lowThreshold = 1.0; // Threshold value to switch to low range (in picofarads)
+
+void setup() {
+  lcd.init();
+  lcd.backlight();
+
+  pinMode(ScalepF, INPUT);
+  pinMode(ScalenF, INPUT);
+
+  pinMode(OUT_PIN, OUTPUT);
+  pinMode(IN_PIN, OUTPUT);
+  pinMode(chargePin, OUTPUT);
+}
+
+void loop() {
+  // Measure capacitance
+  float measuredCapacitance = measureCapacitance();
+
+  // Check if the measured capacitance is in high range
+  if (measuredCapacitance >= highThreshold) {
+    // Perform high range measurement
+    performHighRangeMeasurement(measuredCapacitance);
+  } 
+  // Check if the measured capacitance is in low range
+  else if (measuredCapacitance <= lowThreshold) {
+    // Perform low range measurement
+    performLowRangeMeasurement();
+  } 
+  // If measured capacitance is between low and high thresholds, it's in the high range
+  else {
+    // Perform high range measurement
+    performHighRangeMeasurement(measuredCapacitance);
+  }
+}
+
+// Function to measure capacitance
+float measureCapacitance() {
+  // Check selected scale
+  if (digitalRead(ScalenF)) {
+    // Perform high range measurement
+    digitalWrite(chargePin, HIGH);  
+    unsigned long startTime = micros();
+    while(analogRead(analogPin) < 648) { }
+    unsigned long elapsedTime = micros() - startTime;
+    float microFarads = (elapsedTime / resistorValue);
+    return microFarads;
+  } else if (digitalRead(ScalepF)) {
+    // Perform low range measurement
+    pinMode(IN_PIN, INPUT);
+    digitalWrite(OUT_PIN, HIGH);
+    int val = analogRead(IN_PIN);
+    digitalWrite(OUT_PIN, LOW);
+    float capacitance = (float)val * IN_STRAY_CAP_TO_GND / (MAX_ADC_VALUE - val);
+    return capacitance;
+  }
+}
+
+// Function to perform high range measurement
+void performHighRangeMeasurement(float capacitance) {
+  if (capacitance > 1) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("SCALE:  100nF-4F");
+    lcd.setCursor(0, 1);
+    lcd.print(capacitance);
+    lcd.setCursor(14, 1);
+    lcd.print("uF");
+    delay(500);
+  } else {
+    float nanoFarads = capacitance * 1000.0;
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("SCALE:  100nF-4F");
+    lcd.setCursor(0, 1);
+    lcd.print(nanoFarads);
+    lcd.setCursor(14, 1);
+    lcd.print("nF");
+    delay(500);
+  }
+
+  digitalWrite(chargePin, LOW);            
+  pinMode(dischargePin, OUTPUT);            
+  digitalWrite(dischargePin, LOW);          
+  while(analogRead(analogPin) > 0) { }
+  pinMode(dischargePin, INPUT);
+
+  lcd.setCursor(0, 0);
+  lcd.print("DISCHARGING.....");
+  lcd.setCursor(0, 1);
+}
+
+// Function to perform low range measurement
+void performLowRangeMeasurement() {
+  pinMode(chargePin, INPUT);
+  pinMode(dischargePin, INPUT);
+
+  pinMode(IN_PIN, INPUT);
+  digitalWrite(OUT_PIN, HIGH);
+  int val = analogRead(IN_PIN);
+  digitalWrite(OUT_PIN, LOW);
+
+  if (val < 976) {
+    pinMode(IN_PIN, OUTPUT);
+    float capacitance = (float)val * IN_STRAY_CAP_TO_GND / (MAX_ADC_VALUE - val);
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Scale:   1pF-1nF");
+    lcd.setCursor(0, 1);
+    lcd.print(capacitance, 3);
+    lcd.setCursor(14, 1);
+    lcd.print("pF");
+    delay(200);
+  } else {
+    pinMode(IN_PIN, OUTPUT);
+    delay(1);
+    pinMode(OUT_PIN, INPUT_PULLUP);
+    unsigned long u1 = micros();
+    unsigned long t;
+    int digVal;
+
+    do {
+      digVal = digitalRead(OUT_PIN);
+      unsigned long u2 = micros();
+      t = u2 > u1 ? u2 - u1 : u1 - u2;
+    } while ((digVal < 1) && (t < 400000L));
+
+    pinMode(OUT_PIN, INPUT);  
+    val = analogRead(OUT_PIN);
+    digitalWrite(IN_PIN, HIGH);
+    int dischargeTime = (int)(t / 1000L) * 5;
+    delay(dischargeTime);   
+    pinMode(OUT_PIN, OUTPUT);  
+    digitalWrite(OUT_PIN, LOW);
+    digitalWrite(IN_PIN, LOW);
+
+    float capacitance = -(float)t / R_PULLUP / log(1.0 - (float)val / (float)MAX_ADC_VALUE);
+
+    lcd.setCursor(0, 0);
+    lcd.print("Scale:   1pF-1nF");
+
+    if (capacitance > 1000.0) {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Scale:   1pF-1nF");
+      lcd.setCursor(0, 1);
+      lcd.print(capacitance / 1000.0, 3);
+      lcd.setCursor(14, 1);
+      lcd.print("uF ");
+      delay(200);
+    } else {
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Scale:   1pF-1nF");
+      lcd.setCursor(0, 1);
+      lcd.print(capacitance, 3);
+      lcd.setCursor(14, 1);
+      lcd.print("nF");
+      delay(200);
+    }
+  }
+}
